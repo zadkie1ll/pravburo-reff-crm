@@ -1,0 +1,11 @@
+name: pravburo-reff-crm
+
+services:
+  pravburo-reff-crm:
+    build: .
+    env_file: .env
+    ports:
+      - "127.0.0.1:${CRM_PORT:-8042}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
