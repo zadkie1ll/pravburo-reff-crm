@@ -31,3 +31,6 @@ uv sync
 uv run pytest
 docker compose up --build -d
 ```
+
+На production сервис работает в host network и слушает только
+`127.0.0.1:8042`.

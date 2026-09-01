@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     bitrix_webhook_secret: str = ""
     bitrix_agent_source_id: str = "RECOMMENDATION"
     bitrix_client_category_id: int = 2
-    bounty_service_url: str = "http://pravburo-reff-bounty:8000"
+    bounty_service_url: str = "http://127.0.0.1:8041"
     internal_service_token: str = "development-internal-token"
 
     @model_validator(mode="after")
