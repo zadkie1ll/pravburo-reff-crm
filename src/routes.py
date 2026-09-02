@@ -1,4 +1,5 @@
 import hmac
+import logging
 import re
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -10,6 +11,7 @@ from src.config import get_settings
 from src.internal_auth import require_internal_token
 
 router = APIRouter(tags=["CRM"])
+logger = logging.getLogger(__name__)
 
 
 def extract_bitrix_deal_id(payload: dict) -> str | None:
@@ -29,7 +31,13 @@ def extract_bitrix_deal_id(payload: dict) -> str | None:
 @router.post("/internal/leads", dependencies=[Depends(require_internal_token)])
 async def create_lead(payload: LeadCreate) -> dict[str, str]:
     lead_id = await BitrixGateway().create_lead(LeadData(**payload.model_dump()))
-    return {"lead_id": lead_id}
+    logger.info(
+        "Bitrix lead created: application_id=%s agent_id=%s lead_id=%s",
+        payload.application_id,
+        payload.agent_id,
+        lead_id,
+    )
+    return {"status": "created", "lead_id": lead_id}
 
 
 @router.post("/webhooks/bitrix/deal-category")

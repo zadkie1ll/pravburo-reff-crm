@@ -65,6 +65,8 @@ class BitrixGateway:
                 }
             },
         )
+        if result is None or str(result).strip() == "":
+            raise BitrixError("Bitrix did not return the created lead ID")
         return str(result)
 
     async def get_deal(self, deal_id: str) -> dict[str, Any]:

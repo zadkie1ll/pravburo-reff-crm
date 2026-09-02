@@ -6,6 +6,9 @@
 `CATEGORY_ID == 2`, извлекает атрибуцию и передаёт команду начисления в
 `pravburo-reff-bounty`.
 
+Актуальная карта статусов лида и стадий сделки категории 0 находится в
+[`docs/CRM_STAGE_MAP.md`](docs/CRM_STAGE_MAP.md).
+
 ## Common submodule
 
 ```bash
@@ -17,7 +20,8 @@ git submodule update --init --recursive
 
 ## Маршруты
 
-- `POST /internal/leads`;
+- `POST /internal/leads` — создаёт лид с именем и телефоном и возвращает
+  `{"status": "created", "lead_id": "<Bitrix ID>"}`;
 - `GET /internal/deals/{deal_id}/contact-phone`;
 - `POST /webhooks/bitrix/deal-category`;
 - `GET /health/live`, `GET /health/ready`.

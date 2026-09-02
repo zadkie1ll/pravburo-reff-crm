@@ -1,6 +1,8 @@
+import asyncio
+
 from fastapi.testclient import TestClient
 
-from src.bitrix import BitrixGateway, extract_attribution_marker
+from src.bitrix import BitrixGateway, LeadData, extract_attribution_marker
 from src.config import get_settings
 from src.main import app
 from src.routes import extract_bitrix_deal_id
@@ -34,6 +36,8 @@ def test_internal_lead_endpoint_calls_bitrix(monkeypatch) -> None:
     async def fake_create_lead(self, lead):
         del self
         assert lead.application_id == 1
+        assert lead.full_name == "Тестовый Клиент"
+        assert lead.phone_normalized == "+79990000000"
         return "9001"
 
     monkeypatch.setattr(BitrixGateway, "create_lead", fake_create_lead)
@@ -49,4 +53,33 @@ def test_internal_lead_endpoint_calls_bitrix(monkeypatch) -> None:
             },
         )
     assert response.status_code == 200
-    assert response.json() == {"lead_id": "9001"}
+    assert response.json() == {"status": "created", "lead_id": "9001"}
+
+
+def test_bitrix_lead_payload_contains_name_and_phone(monkeypatch) -> None:
+    captured: dict = {}
+
+    async def fake_call(self, method, payload):
+        del self
+        captured["method"] = method
+        captured["payload"] = payload
+        return 9002
+
+    monkeypatch.setattr(BitrixGateway, "_call", fake_call)
+    lead_id = asyncio.run(
+        BitrixGateway().create_lead(
+            LeadData(
+                application_id=1,
+                agent_id=2,
+                agent_name="Тестовый агент",
+                full_name="Иванов Иван Иванович",
+                phone_normalized="+79990000000",
+            )
+        )
+    )
+
+    assert lead_id == "9002"
+    assert captured["method"] == "crm.lead.add"
+    fields = captured["payload"]["fields"]
+    assert fields["NAME"] == "Иванов Иван Иванович"
+    assert fields["PHONE"] == [{"VALUE": "+79990000000", "VALUE_TYPE": "WORK"}]
