@@ -1,12 +1,18 @@
 import httpx
 from pravburo_ref_common.contracts import RewardCreate
+from pravburo_ref_common.models import RewardType
 
 from src.config import get_settings
 
 
 class BountyClient:
     async def create_reward(
-        self, *, deal_id: str, application_id: int, agent_id: int
+        self,
+        *,
+        deal_id: str,
+        application_id: int,
+        agent_id: int,
+        reward_type: RewardType = RewardType.MAIN,
     ) -> dict[str, object]:
         settings = get_settings()
         async with httpx.AsyncClient(timeout=10) as client:
@@ -17,6 +23,7 @@ class BountyClient:
                     deal_id=deal_id,
                     application_id=application_id,
                     agent_id=agent_id,
+                    reward_type=reward_type,
                 ).model_dump(mode="json"),
             )
         response.raise_for_status()

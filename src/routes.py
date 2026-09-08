@@ -4,6 +4,7 @@ import re
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pravburo_ref_common.contracts import LeadCreate
+from pravburo_ref_common.models import RewardType
 
 from src.bitrix import BitrixGateway, LeadData, extract_attribution_marker
 from src.bounty_client import BountyClient
@@ -13,6 +14,13 @@ from src.site_client import SiteClient
 
 router = APIRouter(tags=["CRM"])
 logger = logging.getLogger(__name__)
+
+# Воронка "Агенты" (category_id=10): какая стадия сделки запускает какое
+# начисление партнёру. Суммы настраиваются в bounty на /admin/reward-rates.
+STAGE_REWARD_TRIGGERS: dict[str, RewardType] = {
+    "C10:PREPARATION": RewardType.ADVANCE,  # "Подан" = договор подписан
+    "C10:EXECUTING": RewardType.MAIN,  # "Завершен" = депозит оплачен
+}
 
 
 def extract_bitrix_deal_id(payload: dict) -> str | None:
@@ -82,10 +90,15 @@ async def deal_category_webhook(
                 application_id,
             )
 
+    reward_type = STAGE_REWARD_TRIGGERS.get(str(stage_code))
+    if reward_type is None:
+        return {"status": "ignored", "reason": "stage_not_reward_trigger"}
+
     return await BountyClient().create_reward(
         deal_id=deal_id,
         application_id=application_id,
         agent_id=agent_id,
+        reward_type=reward_type,
     )
 
 
