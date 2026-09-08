@@ -18,8 +18,9 @@ class Settings(BaseSettings):
     bitrix_webhook_url: str = ""
     bitrix_webhook_secret: str = ""
     bitrix_agent_source_id: str = "RECOMMENDATION"
-    bitrix_client_category_id: int = 2
+    bitrix_client_category_id: int = 10
     bounty_service_url: str = "http://127.0.0.1:8041"
+    site_service_url: str = "http://127.0.0.1:8040"
     internal_service_token: str = "development-internal-token"
 
     @model_validator(mode="after")

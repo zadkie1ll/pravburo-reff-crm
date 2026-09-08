@@ -9,6 +9,7 @@ from src.bitrix import BitrixGateway, LeadData, extract_attribution_marker
 from src.bounty_client import BountyClient
 from src.config import get_settings
 from src.internal_auth import require_internal_token
+from src.site_client import SiteClient
 
 router = APIRouter(tags=["CRM"])
 logger = logging.getLogger(__name__)
@@ -67,6 +68,20 @@ async def deal_category_webhook(
     if marker is None:
         return {"status": "ignored", "reason": "no_agent_attribution"}
     agent_id, application_id = marker
+
+    stage_code = deal.get("STAGE_ID")
+    if stage_code:
+        try:
+            await SiteClient().update_deal_stage(
+                application_id=application_id, deal_id=deal_id, stage_code=str(stage_code)
+            )
+        except Exception:
+            logger.warning(
+                "Failed to sync deal stage to site: deal_id=%s application_id=%s",
+                deal_id,
+                application_id,
+            )
+
     return await BountyClient().create_reward(
         deal_id=deal_id,
         application_id=application_id,
