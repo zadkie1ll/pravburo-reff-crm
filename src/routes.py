@@ -55,8 +55,12 @@ async def deal_category_webhook(
     webhook_secret: str = Header(default="", alias="X-Webhook-Secret"),
 ) -> dict[str, object]:
     settings = get_settings()
+    # Bitrix's built-in "Исходящий вебхук" automation robot only lets you
+    # configure a target URL, no custom headers - so it passes the secret
+    # as a query param instead of X-Webhook-Secret.
+    provided_secret = webhook_secret or request.query_params.get("secret", "")
     if not settings.bitrix_webhook_secret or not hmac.compare_digest(
-        webhook_secret, settings.bitrix_webhook_secret
+        provided_secret, settings.bitrix_webhook_secret
     ):
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
     content_type = request.headers.get("content-type", "")

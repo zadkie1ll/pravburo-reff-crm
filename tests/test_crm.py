@@ -120,6 +120,53 @@ def test_deal_category_webhook_syncs_stage_and_creates_advance_reward(monkeypatc
     ]
 
 
+def test_deal_category_webhook_accepts_secret_as_query_param(monkeypatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "bitrix_webhook_secret", "webhook-secret")
+    monkeypatch.setattr(settings, "bitrix_client_category_id", 10)
+
+    async def fake_get_deal(self, deal_id):
+        del self
+        assert deal_id == "555"
+        return {
+            "CATEGORY_ID": "10",
+            "STAGE_ID": "C10:PREPARATION",
+            "SOURCE_DESCRIPTION": "Агент: Иван\n[pravburo-agent:v1;agent_id=123;application_id=456]",
+        }
+
+    async def fake_update_deal_stage(self, *, application_id, deal_id, stage_code):
+        del self, application_id, deal_id, stage_code
+
+    async def fake_create_reward(self, *, deal_id, application_id, agent_id, reward_type):
+        del self, deal_id, application_id, agent_id, reward_type
+        return {"status": "created", "reward_id": 1}
+
+    monkeypatch.setattr(BitrixGateway, "get_deal", fake_get_deal)
+    monkeypatch.setattr(SiteClient, "update_deal_stage", fake_update_deal_stage)
+    monkeypatch.setattr(BountyClient, "create_reward", fake_create_reward)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/bitrix/deal-category?secret=webhook-secret",
+            data={"document_id[2]": "DEAL_555"},
+        )
+
+    assert response.status_code == 200
+
+
+def test_deal_category_webhook_rejects_wrong_query_secret(monkeypatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "bitrix_webhook_secret", "webhook-secret")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/bitrix/deal-category?secret=wrong",
+            data={"document_id[2]": "DEAL_555"},
+        )
+
+    assert response.status_code == 401
+
+
 def test_deal_category_webhook_ignores_non_reward_stage(monkeypatch) -> None:
     settings = get_settings()
     monkeypatch.setattr(settings, "bitrix_webhook_secret", "webhook-secret")
