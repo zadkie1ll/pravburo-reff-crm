@@ -15,12 +15,12 @@ from src.site_client import SiteClient
 router = APIRouter(tags=["CRM"])
 logger = logging.getLogger(__name__)
 
-# Воронка "Агенты" (category_id=10): какая стадия сделки запускает какое
-# начисление партнёру. Суммы настраиваются в bounty на /admin/reward-rates.
-STAGE_REWARD_TRIGGERS: dict[str, RewardType] = {
-    "C10:PREPARATION": RewardType.ADVANCE,  # "Подан" = договор подписан
-    "C10:EXECUTING": RewardType.MAIN,  # "Завершен" = депозит оплачен
-}
+# Воронка "Сопровождение" (category_id=2). Аванс партнёру полагается, как только
+# сделка попала в воронку (на любой её стадии; повторный вызов bounty не дублирует),
+# основная выплата - когда сделка дошла до стадии MAIN_REWARD_STAGE.
+# Суммы настраиваются в bounty на /admin/reward-rates.
+# TODO: стадию для основной выплаты уточнить у руководителя ("Депозит оплачен" по ТЗ).
+MAIN_REWARD_STAGE = "C2:UC_MYA2I0"  # "ОБСУЖДЕНИЕ депозита"
 
 
 def extract_bitrix_deal_id(payload: dict) -> str | None:
@@ -94,16 +94,23 @@ async def deal_category_webhook(
                 application_id,
             )
 
-    reward_type = STAGE_REWARD_TRIGGERS.get(str(stage_code))
-    if reward_type is None:
-        return {"status": "ignored", "reason": "stage_not_reward_trigger"}
+    if not stage_code:
+        return {"status": "ignored", "reason": "no_stage"}
 
-    return await BountyClient().create_reward(
-        deal_id=deal_id,
-        application_id=application_id,
-        agent_id=agent_id,
-        reward_type=reward_type,
-    )
+    reward_types = [RewardType.ADVANCE]
+    if str(stage_code) == MAIN_REWARD_STAGE:
+        reward_types.append(RewardType.MAIN)
+
+    rewards = [
+        await BountyClient().create_reward(
+            deal_id=deal_id,
+            application_id=application_id,
+            agent_id=agent_id,
+            reward_type=reward_type,
+        )
+        for reward_type in reward_types
+    ]
+    return {"status": "processed", "rewards": rewards}
 
 
 @router.get(
