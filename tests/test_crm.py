@@ -165,7 +165,7 @@ def test_deal_category_webhook_rejects_wrong_query_secret(monkeypatch) -> None:
     assert response.status_code == 401
 
 
-def _run_deal_webhook(monkeypatch, *, category_id: str, stage_id: str):
+def _run_deal_webhook(monkeypatch, *, category_id: str, stage_id: str, as_bitrix_event=False):
     settings = get_settings()
     monkeypatch.setattr(settings, "bitrix_webhook_secret", "webhook-secret")
     monkeypatch.setattr(settings, "bitrix_client_category_ids", "0,2")
@@ -195,11 +195,18 @@ def _run_deal_webhook(monkeypatch, *, category_id: str, stage_id: str):
     monkeypatch.setattr(BountyClient, "create_reward", fake_create_reward)
 
     with TestClient(app) as client:
-        response = client.post(
-            "/webhooks/bitrix/deal-category",
-            headers={"X-Webhook-Secret": "webhook-secret"},
-            data={"document_id[2]": "DEAL_555"},
-        )
+        if as_bitrix_event:
+            # Общий исходящий вебхук Bitrix24 по событию: секрет только в адресе.
+            response = client.post(
+                "/webhooks/bitrix/deal-category?secret=webhook-secret",
+                data={"event": "ONCRMDEALUPDATE", "data[FIELDS][ID]": "555"},
+            )
+        else:
+            response = client.post(
+                "/webhooks/bitrix/deal-category",
+                headers={"X-Webhook-Secret": "webhook-secret"},
+                data={"document_id[2]": "DEAL_555"},
+            )
     return response, reward_types
 
 
@@ -220,6 +227,16 @@ def test_deal_category_webhook_main_stage_gives_advance_and_main(monkeypatch) ->
 
     assert response.status_code == 200
     assert reward_types == [RewardType.ADVANCE, RewardType.MAIN]
+
+
+def test_deal_category_webhook_accepts_bitrix_event_format(monkeypatch) -> None:
+    response, reward_types = _run_deal_webhook(
+        monkeypatch, category_id="2", stage_id="C2:NEW", as_bitrix_event=True
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "processed"
+    assert reward_types == [RewardType.ADVANCE]
 
 
 def test_deal_category_webhook_funnel_0_syncs_stage_without_rewards(monkeypatch) -> None:
