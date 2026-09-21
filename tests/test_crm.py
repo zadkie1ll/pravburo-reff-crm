@@ -62,7 +62,7 @@ def test_internal_lead_endpoint_calls_bitrix(monkeypatch) -> None:
 def test_deal_category_webhook_syncs_stage_and_creates_advance_on_entry(monkeypatch) -> None:
     settings = get_settings()
     monkeypatch.setattr(settings, "bitrix_webhook_secret", "webhook-secret")
-    monkeypatch.setattr(settings, "bitrix_client_category_id", 2)
+    monkeypatch.setattr(settings, "bitrix_client_category_ids", "0,2")
 
     async def fake_get_deal(self, deal_id):
         del self
@@ -121,7 +121,7 @@ def test_deal_category_webhook_syncs_stage_and_creates_advance_on_entry(monkeypa
 def test_deal_category_webhook_accepts_secret_as_query_param(monkeypatch) -> None:
     settings = get_settings()
     monkeypatch.setattr(settings, "bitrix_webhook_secret", "webhook-secret")
-    monkeypatch.setattr(settings, "bitrix_client_category_id", 2)
+    monkeypatch.setattr(settings, "bitrix_client_category_ids", "0,2")
 
     async def fake_get_deal(self, deal_id):
         del self
@@ -168,7 +168,7 @@ def test_deal_category_webhook_rejects_wrong_query_secret(monkeypatch) -> None:
 def _run_deal_webhook(monkeypatch, *, category_id: str, stage_id: str):
     settings = get_settings()
     monkeypatch.setattr(settings, "bitrix_webhook_secret", "webhook-secret")
-    monkeypatch.setattr(settings, "bitrix_client_category_id", 2)
+    monkeypatch.setattr(settings, "bitrix_client_category_ids", "0,2")
 
     async def fake_get_deal(self, deal_id):
         del self, deal_id
@@ -220,6 +220,14 @@ def test_deal_category_webhook_main_stage_gives_advance_and_main(monkeypatch) ->
 
     assert response.status_code == 200
     assert reward_types == [RewardType.ADVANCE, RewardType.MAIN]
+
+
+def test_deal_category_webhook_funnel_0_syncs_stage_without_rewards(monkeypatch) -> None:
+    response, reward_types = _run_deal_webhook(monkeypatch, category_id="0", stage_id="UC_4FX5NE")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "stage_synced"}
+    assert reward_types == []
 
 
 def test_deal_category_webhook_ignores_other_funnel(monkeypatch) -> None:

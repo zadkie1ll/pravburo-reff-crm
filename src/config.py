@@ -18,10 +18,15 @@ class Settings(BaseSettings):
     bitrix_webhook_url: str = ""
     bitrix_webhook_secret: str = ""
     bitrix_agent_source_id: str = "RECOMMENDATION"
-    bitrix_client_category_id: int = 2
+    # Воронки, сделки которых обрабатывает вебхук: 0 "Основная" (продажи) и 2 "Сопровождение".
+    bitrix_client_category_ids: str = "0,2"
     bounty_service_url: str = "http://127.0.0.1:8041"
     site_service_url: str = "http://127.0.0.1:8040"
     internal_service_token: str = "development-internal-token"
+
+    @property
+    def client_category_ids(self) -> set[int]:
+        return {int(part) for part in self.bitrix_client_category_ids.split(",") if part.strip()}
 
     @model_validator(mode="after")
     def validate_production_secrets(self) -> "Settings":

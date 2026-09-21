@@ -15,6 +15,10 @@ from src.site_client import SiteClient
 router = APIRouter(tags=["CRM"])
 logger = logging.getLogger(__name__)
 
+# Стадии сделок из всех принимаемых воронок (BITRIX_CLIENT_CATEGORY_IDS) уходят на сайт,
+# а выплаты создаются только для воронки "Сопровождение" (category_id=2).
+REWARD_CATEGORY_ID = 2
+
 # Воронка "Сопровождение" (category_id=2). Аванс партнёру полагается, как только
 # сделка попала в воронку (на любой её стадии; повторный вызов bounty не дублирует),
 # основная выплата - когда сделка дошла до стадии MAIN_REWARD_STAGE.
@@ -74,7 +78,8 @@ async def deal_category_webhook(
             detail="Deal ID is required (expected document_id[2]=DEAL_<id>)",
         )
     deal = await BitrixGateway().get_deal(deal_id)
-    if int(deal.get("CATEGORY_ID", -1)) != settings.bitrix_client_category_id:
+    category_id = int(deal.get("CATEGORY_ID", -1))
+    if category_id not in settings.client_category_ids:
         return {"status": "ignored", "reason": "category"}
     marker = extract_attribution_marker(deal.get("SOURCE_DESCRIPTION"))
     if marker is None:
@@ -96,6 +101,9 @@ async def deal_category_webhook(
 
     if not stage_code:
         return {"status": "ignored", "reason": "no_stage"}
+    if category_id != REWARD_CATEGORY_ID:
+        # До договора (воронка "Основная") клиент только меняет этап: выплаты ещё нет.
+        return {"status": "stage_synced"}
 
     reward_types = [RewardType.ADVANCE]
     if str(stage_code) == MAIN_REWARD_STAGE:
