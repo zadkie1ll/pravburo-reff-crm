@@ -1,12 +1,13 @@
 import hmac
 import logging
 import re
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pravburo_ref_common.contracts import LeadCreate
 from pravburo_ref_common.models import RewardType
 
-from src.bitrix import BitrixGateway, LeadData, extract_attribution_marker
+from src.bitrix import BitrixGateway, LeadData, extract_attribution_marker, is_paid_in_full
 from src.bounty_client import BountyClient
 from src.config import get_settings
 from src.internal_auth import require_internal_token
@@ -14,6 +15,10 @@ from src.site_client import SiteClient
 
 router = APIRouter(tags=["CRM"])
 logger = logging.getLogger(__name__)
+
+# Фикс от руководителя: бонус за то, что клиент оплатил 100% суммы (OPPORTUNITY)
+# первым платежом, а не в рассрочку - не зависит от уровня партнёра.
+BONUS_FULL_PAYMENT_AMOUNT = Decimal("3000")
 
 # Стадии сделок из всех принимаемых воронок (BITRIX_CLIENT_CATEGORY_IDS) уходят на сайт,
 # а выплаты создаются только для воронки "Сопровождение" (category_id=2).
@@ -108,6 +113,8 @@ async def deal_category_webhook(
     reward_types = [RewardType.ADVANCE]
     if str(stage_code) == MAIN_REWARD_STAGE:
         reward_types.append(RewardType.MAIN)
+        if is_paid_in_full(deal):
+            reward_types.append(RewardType.BONUS_FULL_PAYMENT)
 
     rewards = [
         await BountyClient().create_reward(
@@ -115,6 +122,9 @@ async def deal_category_webhook(
             application_id=application_id,
             agent_id=agent_id,
             reward_type=reward_type,
+            amount=(
+                BONUS_FULL_PAYMENT_AMOUNT if reward_type == RewardType.BONUS_FULL_PAYMENT else None
+            ),
         )
         for reward_type in reward_types
     ]

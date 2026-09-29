@@ -1,9 +1,10 @@
 import asyncio
+from decimal import Decimal
 
 from fastapi.testclient import TestClient
 from pravburo_ref_common.models import RewardType
 
-from src.bitrix import BitrixGateway, LeadData, extract_attribution_marker
+from src.bitrix import BitrixGateway, LeadData, extract_attribution_marker, is_paid_in_full
 from src.bounty_client import BountyClient
 from src.config import get_settings
 from src.main import app
@@ -16,6 +17,24 @@ def test_marker_and_bitrix_payload_parsing() -> None:
     assert extract_attribution_marker(marker) == (123, 456)
     assert extract_bitrix_deal_id({"document_id[2]": "DEAL_777"}) == "777"
     assert extract_bitrix_deal_id({"data": {"FIELDS": {"ID": 888}}}) == "888"
+
+
+def test_is_paid_in_full_true_when_first_payment_equals_opportunity() -> None:
+    deal = {"OPPORTUNITY": "189000.00", "UF_CRM_1742468532579": "189000|RUB"}
+    assert is_paid_in_full(deal) is True
+
+
+def test_is_paid_in_full_false_on_real_installment_deal() -> None:
+    # Реальная сделка 19588 (2026-09-29): рассрочка на 10 платежей по 18900,
+    # первый платёж не равен полной сумме.
+    deal = {"OPPORTUNITY": "189000.00", "UF_CRM_1742468532579": "18900|RUB"}
+    assert is_paid_in_full(deal) is False
+
+
+def test_is_paid_in_full_false_when_fields_missing_or_empty() -> None:
+    assert is_paid_in_full({}) is False
+    assert is_paid_in_full({"OPPORTUNITY": "189000.00", "UF_CRM_1742468532579": ""}) is False
+    assert is_paid_in_full({"OPPORTUNITY": "", "UF_CRM_1742468532579": "189000|RUB"}) is False
 
 
 def test_internal_lead_endpoint_requires_token() -> None:
@@ -83,7 +102,9 @@ def test_deal_category_webhook_syncs_stage_and_creates_advance_on_entry(monkeypa
 
     reward_calls: list[dict] = []
 
-    async def fake_create_reward(self, *, deal_id, application_id, agent_id, reward_type):
+    async def fake_create_reward(
+        self, *, deal_id, application_id, agent_id, reward_type, amount=None
+    ):
         del self
         reward_calls.append(
             {
@@ -91,6 +112,7 @@ def test_deal_category_webhook_syncs_stage_and_creates_advance_on_entry(monkeypa
                 "application_id": application_id,
                 "agent_id": agent_id,
                 "reward_type": reward_type,
+                "amount": amount,
             }
         )
         return {"status": "created", "reward_id": 1}
@@ -114,6 +136,7 @@ def test_deal_category_webhook_syncs_stage_and_creates_advance_on_entry(monkeypa
             "application_id": 456,
             "agent_id": 123,
             "reward_type": RewardType.ADVANCE,
+            "amount": None,
         }
     ]
 
@@ -135,8 +158,10 @@ def test_deal_category_webhook_accepts_secret_as_query_param(monkeypatch) -> Non
     async def fake_update_deal_stage(self, *, application_id, deal_id, stage_code):
         del self, application_id, deal_id, stage_code
 
-    async def fake_create_reward(self, *, deal_id, application_id, agent_id, reward_type):
-        del self, deal_id, application_id, agent_id, reward_type
+    async def fake_create_reward(
+        self, *, deal_id, application_id, agent_id, reward_type, amount=None
+    ):
+        del self, deal_id, application_id, agent_id, reward_type, amount
         return {"status": "created", "reward_id": 1}
 
     monkeypatch.setattr(BitrixGateway, "get_deal", fake_get_deal)
@@ -165,7 +190,9 @@ def test_deal_category_webhook_rejects_wrong_query_secret(monkeypatch) -> None:
     assert response.status_code == 401
 
 
-def _run_deal_webhook(monkeypatch, *, category_id: str, stage_id: str, as_bitrix_event=False):
+def _run_deal_webhook(
+    monkeypatch, *, category_id: str, stage_id: str, as_bitrix_event=False, extra_deal_fields=None
+):
     settings = get_settings()
     monkeypatch.setattr(settings, "bitrix_webhook_secret", "webhook-secret")
     monkeypatch.setattr(settings, "bitrix_client_category_ids", "0,2")
@@ -178,16 +205,21 @@ def _run_deal_webhook(monkeypatch, *, category_id: str, stage_id: str, as_bitrix
             "SOURCE_DESCRIPTION": (
                 "Агент: Иван\n[pravburo-agent:v1;agent_id=123;application_id=456]"
             ),
+            **(extra_deal_fields or {}),
         }
 
     async def fake_update_deal_stage(self, *, application_id, deal_id, stage_code):
         del self, application_id, deal_id, stage_code
 
     reward_types: list[RewardType] = []
+    reward_amounts: list[object] = []
 
-    async def fake_create_reward(self, *, deal_id, application_id, agent_id, reward_type):
+    async def fake_create_reward(
+        self, *, deal_id, application_id, agent_id, reward_type, amount=None
+    ):
         del self, deal_id, application_id, agent_id
         reward_types.append(reward_type)
+        reward_amounts.append(amount)
         return {"status": "created", "reward_id": len(reward_types)}
 
     monkeypatch.setattr(BitrixGateway, "get_deal", fake_get_deal)
@@ -207,11 +239,11 @@ def _run_deal_webhook(monkeypatch, *, category_id: str, stage_id: str, as_bitrix
                 headers={"X-Webhook-Secret": "webhook-secret"},
                 data={"document_id[2]": "DEAL_555"},
             )
-    return response, reward_types
+    return response, reward_types, reward_amounts
 
 
 def test_deal_category_webhook_any_stage_of_funnel_gives_only_advance(monkeypatch) -> None:
-    response, reward_types = _run_deal_webhook(
+    response, reward_types, _ = _run_deal_webhook(
         monkeypatch, category_id="2", stage_id="C2:UC_M5ONI8"
     )
 
@@ -221,7 +253,7 @@ def test_deal_category_webhook_any_stage_of_funnel_gives_only_advance(monkeypatc
 
 
 def test_deal_category_webhook_main_stage_gives_advance_and_main(monkeypatch) -> None:
-    response, reward_types = _run_deal_webhook(
+    response, reward_types, _ = _run_deal_webhook(
         monkeypatch, category_id="2", stage_id=MAIN_REWARD_STAGE
     )
 
@@ -229,8 +261,39 @@ def test_deal_category_webhook_main_stage_gives_advance_and_main(monkeypatch) ->
     assert reward_types == [RewardType.ADVANCE, RewardType.MAIN]
 
 
+def test_deal_category_webhook_main_stage_with_full_payment_adds_bonus(monkeypatch) -> None:
+    response, reward_types, reward_amounts = _run_deal_webhook(
+        monkeypatch,
+        category_id="2",
+        stage_id=MAIN_REWARD_STAGE,
+        extra_deal_fields={
+            "OPPORTUNITY": "189000.00",
+            "UF_CRM_1742468532579": "189000|RUB",
+        },
+    )
+
+    assert response.status_code == 200
+    assert reward_types == [RewardType.ADVANCE, RewardType.MAIN, RewardType.BONUS_FULL_PAYMENT]
+    assert reward_amounts[-1] == Decimal("3000")
+
+
+def test_deal_category_webhook_main_stage_without_full_payment_has_no_bonus(monkeypatch) -> None:
+    response, reward_types, _ = _run_deal_webhook(
+        monkeypatch,
+        category_id="2",
+        stage_id=MAIN_REWARD_STAGE,
+        extra_deal_fields={
+            "OPPORTUNITY": "189000.00",
+            "UF_CRM_1742468532579": "18900|RUB",
+        },
+    )
+
+    assert response.status_code == 200
+    assert reward_types == [RewardType.ADVANCE, RewardType.MAIN]
+
+
 def test_deal_category_webhook_accepts_bitrix_event_format(monkeypatch) -> None:
-    response, reward_types = _run_deal_webhook(
+    response, reward_types, _ = _run_deal_webhook(
         monkeypatch, category_id="2", stage_id="C2:NEW", as_bitrix_event=True
     )
 
@@ -240,7 +303,9 @@ def test_deal_category_webhook_accepts_bitrix_event_format(monkeypatch) -> None:
 
 
 def test_deal_category_webhook_funnel_0_syncs_stage_without_rewards(monkeypatch) -> None:
-    response, reward_types = _run_deal_webhook(monkeypatch, category_id="0", stage_id="UC_4FX5NE")
+    response, reward_types, _ = _run_deal_webhook(
+        monkeypatch, category_id="0", stage_id="UC_4FX5NE"
+    )
 
     assert response.status_code == 200
     assert response.json() == {"status": "stage_synced"}
@@ -248,7 +313,7 @@ def test_deal_category_webhook_funnel_0_syncs_stage_without_rewards(monkeypatch)
 
 
 def test_deal_category_webhook_ignores_other_funnel(monkeypatch) -> None:
-    response, reward_types = _run_deal_webhook(
+    response, reward_types, _ = _run_deal_webhook(
         monkeypatch, category_id="10", stage_id="C10:PREPARATION"
     )
 

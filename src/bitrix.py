@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
@@ -7,6 +8,11 @@ import httpx
 from src.config import get_settings
 
 MARKER_RE = re.compile(r"\[pravburo-agent:v1;agent_id=(\d+);application_id=(\d+)\]")
+
+# "Первый платёж" custom field on the deal - confirmed against a real 100%-paid
+# deal (2026-09-29) that it equals OPPORTUNITY exactly when the client paid the
+# whole contract sum upfront. Bitrix money-type fields serialize as "N|RUB".
+FIRST_PAYMENT_FIELD_CODE = "UF_CRM_1742468532579"
 
 
 class BitrixError(RuntimeError):
@@ -86,3 +92,31 @@ class BitrixGateway:
 def extract_attribution_marker(source_description: str | None) -> tuple[int, int] | None:
     match = MARKER_RE.search(source_description or "")
     return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def _parse_deal_money(raw: object) -> Decimal | None:
+    """Parse a Bitrix money value - plain "1234.56" (e.g. OPPORTUNITY) or the
+    custom money-field format "1234.56|RUB". None for empty/missing/unparsable.
+    """
+    if raw is None:
+        return None
+    text = str(raw).split("|", 1)[0].strip()
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except InvalidOperation:
+        return None
+
+
+def is_paid_in_full(deal: dict[str, Any]) -> bool:
+    """True when the client paid the whole contract sum as their first
+    payment, per the руководитель's rule for the +3000 BONUS_FULL_PAYMENT
+    reward: OPPORTUNITY (сумма за работу юристов) equals FIRST_PAYMENT_FIELD_CODE
+    (первый платёж). Missing/unparsable either field -> not paid in full.
+    """
+    total = _parse_deal_money(deal.get("OPPORTUNITY"))
+    first_payment = _parse_deal_money(deal.get(FIRST_PAYMENT_FIELD_CODE))
+    if total is None or first_payment is None:
+        return False
+    return total == first_payment
