@@ -5,7 +5,9 @@ from src.config import get_settings
 
 
 class SiteClient:
-    async def update_deal_stage(self, *, application_id: int, deal_id: str, stage_code: str) -> None:
+    async def update_deal_stage(
+        self, *, application_id: int, deal_id: str, stage_code: str
+    ) -> None:
         settings = get_settings()
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.post(
