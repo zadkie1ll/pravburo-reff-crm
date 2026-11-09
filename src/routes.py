@@ -7,7 +7,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pravburo_ref_common.contracts import LeadCreate
 from pravburo_ref_common.models import RewardType
 
-from src.bitrix import BitrixGateway, LeadData, extract_attribution_marker, is_paid_in_full
+from src.bitrix import (
+    BitrixGateway,
+    LeadData,
+    extract_attribution_marker,
+    first_payment_rubles,
+    is_paid_in_full,
+)
 from src.bounty_client import BountyClient
 from src.config import get_settings
 from src.internal_auth import require_internal_token
@@ -24,12 +30,13 @@ BONUS_FULL_PAYMENT_AMOUNT = Decimal("3000")
 # а выплаты создаются только для воронки "Сопровождение" (category_id=2).
 REWARD_CATEGORY_ID = 2
 
-# Воронка "Сопровождение" (category_id=2). Аванс партнёру полагается, как только
-# сделка попала в воронку (на любой её стадии; повторный вызов bounty не дублирует),
+# Воронка "Сопровождение" (category_id=2). Аванс партнёру полагается после
+# первого платежа от 8000 ₽ на любой стадии; повторный вызов bounty не дублирует.
 # основная выплата - когда сделка дошла до стадии MAIN_REWARD_STAGE.
 # Суммы настраиваются в bounty на /admin/reward-rates.
 # TODO: стадию для основной выплаты уточнить у руководителя ("Депозит оплачен" по ТЗ).
 MAIN_REWARD_STAGE = "C2:UC_MYA2I0"  # "ОБСУЖДЕНИЕ депозита"
+MIN_FIRST_PAYMENT_FOR_ADVANCE = Decimal("8000")
 
 
 def extract_bitrix_deal_id(payload: dict) -> str | None:
@@ -110,11 +117,17 @@ async def deal_category_webhook(
         # До договора (воронка "Основная") клиент только меняет этап: выплаты ещё нет.
         return {"status": "stage_synced"}
 
-    reward_types = [RewardType.ADVANCE]
+    first_payment = first_payment_rubles(deal)
+    reward_types = []
+    if first_payment is not None and first_payment >= MIN_FIRST_PAYMENT_FOR_ADVANCE:
+        reward_types.append(RewardType.ADVANCE)
     if str(stage_code) == MAIN_REWARD_STAGE:
         reward_types.append(RewardType.MAIN)
         if is_paid_in_full(deal):
             reward_types.append(RewardType.BONUS_FULL_PAYMENT)
+
+    if not reward_types:
+        return {"status": "stage_synced"}
 
     rewards = [
         await BountyClient().create_reward(

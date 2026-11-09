@@ -1,10 +1,17 @@
 import asyncio
 from decimal import Decimal
 
+import pytest
 from fastapi.testclient import TestClient
 from pravburo_ref_common.models import RewardType
 
-from src.bitrix import BitrixGateway, LeadData, extract_attribution_marker, is_paid_in_full
+from src.bitrix import (
+    FIRST_PAYMENT_FIELD_CODE,
+    BitrixGateway,
+    LeadData,
+    extract_attribution_marker,
+    is_paid_in_full,
+)
 from src.bounty_client import BountyClient
 from src.config import get_settings
 from src.main import app
@@ -35,6 +42,7 @@ def test_is_paid_in_full_false_when_fields_missing_or_empty() -> None:
     assert is_paid_in_full({}) is False
     assert is_paid_in_full({"OPPORTUNITY": "189000.00", "UF_CRM_1742468532579": ""}) is False
     assert is_paid_in_full({"OPPORTUNITY": "", "UF_CRM_1742468532579": "189000|RUB"}) is False
+    assert is_paid_in_full({"OPPORTUNITY": "0", FIRST_PAYMENT_FIELD_CODE: "0|RUB"}) is False
 
 
 def test_internal_lead_endpoint_requires_token() -> None:
@@ -78,7 +86,7 @@ def test_internal_lead_endpoint_calls_bitrix(monkeypatch) -> None:
     assert response.json() == {"status": "created", "lead_id": "9001"}
 
 
-def test_deal_category_webhook_syncs_stage_and_creates_advance_on_entry(monkeypatch) -> None:
+def test_deal_category_webhook_syncs_stage_without_advance_on_unpaid_entry(monkeypatch) -> None:
     settings = get_settings()
     monkeypatch.setattr(settings, "bitrix_webhook_secret", "webhook-secret")
     monkeypatch.setattr(settings, "bitrix_client_category_ids", "0,2")
@@ -89,7 +97,9 @@ def test_deal_category_webhook_syncs_stage_and_creates_advance_on_entry(monkeypa
         return {
             "CATEGORY_ID": "2",
             "STAGE_ID": "C2:NEW",
-            "SOURCE_DESCRIPTION": "Агент: Иван\n[pravburo-agent:v1;agent_id=123;application_id=456]",
+            "SOURCE_DESCRIPTION": (
+                "Агент: Иван\n[pravburo-agent:v1;agent_id=123;application_id=456]"
+            ),
         }
 
     stage_calls: list[dict] = []
@@ -130,15 +140,8 @@ def test_deal_category_webhook_syncs_stage_and_creates_advance_on_entry(monkeypa
 
     assert response.status_code == 200
     assert stage_calls == [{"application_id": 456, "deal_id": "555", "stage_code": "C2:NEW"}]
-    assert reward_calls == [
-        {
-            "deal_id": "555",
-            "application_id": 456,
-            "agent_id": 123,
-            "reward_type": RewardType.ADVANCE,
-            "amount": None,
-        }
-    ]
+    assert response.json() == {"status": "stage_synced"}
+    assert reward_calls == []
 
 
 def test_deal_category_webhook_accepts_secret_as_query_param(monkeypatch) -> None:
@@ -152,7 +155,9 @@ def test_deal_category_webhook_accepts_secret_as_query_param(monkeypatch) -> Non
         return {
             "CATEGORY_ID": "2",
             "STAGE_ID": "C2:NEW",
-            "SOURCE_DESCRIPTION": "Агент: Иван\n[pravburo-agent:v1;agent_id=123;application_id=456]",
+            "SOURCE_DESCRIPTION": (
+                "Агент: Иван\n[pravburo-agent:v1;agent_id=123;application_id=456]"
+            ),
         }
 
     async def fake_update_deal_stage(self, *, application_id, deal_id, stage_code):
@@ -242,23 +247,41 @@ def _run_deal_webhook(
     return response, reward_types, reward_amounts
 
 
-def test_deal_category_webhook_any_stage_of_funnel_gives_only_advance(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("payment", "expected"),
+    [
+        (None, []),
+        ("0|RUB", []),
+        ("7999.99|RUB", []),
+        ("8000|RUB", [RewardType.ADVANCE]),
+        ("12000", [RewardType.ADVANCE]),
+        ("8000|USD", []),
+        ("Infinity|RUB", []),
+        ("не оплачено", []),
+    ],
+)
+def test_deal_category_webhook_checks_minimum_first_payment(monkeypatch, payment, expected) -> None:
     response, reward_types, _ = _run_deal_webhook(
-        monkeypatch, category_id="2", stage_id="C2:UC_M5ONI8"
+        monkeypatch,
+        category_id="2",
+        stage_id="C2:UC_M5ONI8",
+        extra_deal_fields={FIRST_PAYMENT_FIELD_CODE: payment},
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "processed"
-    assert reward_types == [RewardType.ADVANCE]
+    assert reward_types == expected
 
 
-def test_deal_category_webhook_main_stage_gives_advance_and_main(monkeypatch) -> None:
+def test_deal_category_webhook_main_stage_does_not_bypass_advance_threshold(monkeypatch) -> None:
     response, reward_types, _ = _run_deal_webhook(
-        monkeypatch, category_id="2", stage_id=MAIN_REWARD_STAGE
+        monkeypatch,
+        category_id="2",
+        stage_id=MAIN_REWARD_STAGE,
+        extra_deal_fields={FIRST_PAYMENT_FIELD_CODE: "7000|RUB"},
     )
 
     assert response.status_code == 200
-    assert reward_types == [RewardType.ADVANCE, RewardType.MAIN]
+    assert reward_types == [RewardType.MAIN]
 
 
 def test_deal_category_webhook_main_stage_with_full_payment_adds_bonus(monkeypatch) -> None:
@@ -294,7 +317,11 @@ def test_deal_category_webhook_main_stage_without_full_payment_has_no_bonus(monk
 
 def test_deal_category_webhook_accepts_bitrix_event_format(monkeypatch) -> None:
     response, reward_types, _ = _run_deal_webhook(
-        monkeypatch, category_id="2", stage_id="C2:NEW", as_bitrix_event=True
+        monkeypatch,
+        category_id="2",
+        stage_id="C2:NEW",
+        as_bitrix_event=True,
+        extra_deal_fields={FIRST_PAYMENT_FIELD_CODE: "8000|RUB"},
     )
 
     assert response.status_code == 200

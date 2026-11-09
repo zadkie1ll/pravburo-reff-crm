@@ -104,9 +104,20 @@ def _parse_deal_money(raw: object) -> Decimal | None:
     if not text:
         return None
     try:
-        return Decimal(text)
+        amount = Decimal(text)
     except InvalidOperation:
         return None
+    return amount if amount.is_finite() else None
+
+
+def first_payment_rubles(deal: dict[str, Any]) -> Decimal | None:
+    raw = deal.get(FIRST_PAYMENT_FIELD_CODE)
+    _, separator, currency = str(raw).partition("|")
+    if (separator and currency.strip().upper() != "RUB") or (
+        not separator and deal.get("CURRENCY_ID", "RUB") != "RUB"
+    ):
+        return None
+    return _parse_deal_money(raw)
 
 
 def is_paid_in_full(deal: dict[str, Any]) -> bool:
@@ -119,4 +130,4 @@ def is_paid_in_full(deal: dict[str, Any]) -> bool:
     first_payment = _parse_deal_money(deal.get(FIRST_PAYMENT_FIELD_CODE))
     if total is None or first_payment is None:
         return False
-    return total == first_payment
+    return total > 0 and total == first_payment
