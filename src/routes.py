@@ -1,23 +1,29 @@
+import asyncio
 import hmac
 import logging
 import re
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+import httpx
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request
 from pravburo_ref_common.contracts import LeadCreate
 from pravburo_ref_common.models import RewardType
 
 from src.bitrix import (
+    BitrixError,
     BitrixGateway,
+    BitrixNotFound,
     LeadData,
     extract_attribution_marker,
     first_payment_rubles,
     is_paid_in_full,
 )
 from src.bounty_client import BountyClient
+from src.client_search import ClientSearch, name_tokens
 from src.config import get_settings
 from src.internal_auth import require_internal_token
-from src.site_client import SiteClient
+from src.site_client import SiteClient, SiteLookupError
+from src.stage_names import deal_stage_names
 
 router = APIRouter(tags=["CRM"])
 logger = logging.getLogger(__name__)
@@ -95,8 +101,19 @@ async def deal_category_webhook(
         return {"status": "ignored", "reason": "category"}
     marker = extract_attribution_marker(deal.get("SOURCE_DESCRIPTION"))
     if marker is None:
-        return {"status": "ignored", "reason": "no_agent_attribution"}
-    agent_id, application_id = marker
+        try:
+            binding = await SiteClient().resolve_existing_deal(deal_id)
+        except SiteLookupError:
+            raise HTTPException(
+                status_code=502, detail="Existing deal lookup unavailable"
+            ) from None
+        if binding is None:
+            return {"status": "ignored", "reason": "no_agent_attribution"}
+        agent_id, application_id = binding["agent_id"], binding["application_id"]
+    else:
+        # Preserve marker flows during site outages. Imported deals with stale
+        # markers are rejected by the site's/bounty's attribution guards.
+        agent_id, application_id = marker
 
     stage_code = deal.get("STAGE_ID")
     if stage_code:
@@ -144,9 +161,99 @@ async def deal_category_webhook(
     return {"status": "processed", "rewards": rewards}
 
 
+@router.get("/internal/clients/search", dependencies=[Depends(require_internal_token)])
+async def search_clients(
+    q: str = Query(min_length=3, max_length=200),
+    page: int = Query(default=1, ge=1, le=1000),
+) -> dict[str, object]:
+    try:
+        tokens = name_tokens(q)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    try:
+        async with asyncio.timeout(30):
+            return await ClientSearch(BitrixGateway()).search(tokens, page)
+    except (
+        BitrixError,
+        httpx.HTTPError,
+        TimeoutError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        KeyError,
+    ):
+        raise HTTPException(status_code=502, detail="Bitrix lookup unavailable") from None
+
+
+@router.get(
+    "/internal/deals/{deal_id}/existing-client",
+    dependencies=[Depends(require_internal_token)],
+)
+async def existing_client(
+    deal_id: str = Path(min_length=1, max_length=64, pattern=r"^[0-9]+$"),
+) -> dict[str, object]:
+    if int(deal_id) <= 0:
+        raise HTTPException(status_code=422, detail="Deal ID must be positive")
+    gateway = BitrixGateway()
+    try:
+        deal = await gateway.get_deal(deal_id)
+        if not deal:
+            raise HTTPException(status_code=404, detail="Deal not found")
+        category_id = int(deal.get("CATEGORY_ID", -1))
+        if category_id not in get_settings().client_category_ids:
+            raise HTTPException(status_code=404, detail="Deal not found")
+        contact_id = deal.get("CONTACT_ID")
+        contact = await gateway.get_contact(str(contact_id)) if contact_id else {}
+        full_name = (
+            " ".join(
+                str(contact.get(field) or "").strip()
+                for field in ("LAST_NAME", "NAME", "SECOND_NAME")
+                if str(contact.get(field) or "").strip()
+            )
+            or None
+        )
+        phones = contact.get("PHONE") or []
+        phone = next(
+            (str(item["VALUE"]).strip() for item in phones if str(item.get("VALUE") or "").strip()),
+            None,
+        )
+        marker = extract_attribution_marker(deal.get("SOURCE_DESCRIPTION"))
+        first_payment = first_payment_rubles(deal)
+        names = await deal_stage_names(gateway, category_id)
+        return {
+            "deal_id": deal_id,
+            "full_name": full_name,
+            "phone": phone,
+            "stage_code": str(deal.get("STAGE_ID") or ""),
+            "stage_label": names.get(str(deal.get("STAGE_ID") or ""), "Название этапа недоступно"),
+            "category_id": category_id,
+            "first_payment": str(first_payment) if first_payment is not None else None,
+            "paid_in_full": is_paid_in_full(deal),
+            "attributed_agent_id": marker[0] if marker else None,
+            "attributed_application_id": marker[1] if marker else None,
+        }
+    except BitrixNotFound:
+        raise HTTPException(status_code=404, detail="Deal not found") from None
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Deal not found") from None
+        raise HTTPException(status_code=502, detail="Bitrix lookup unavailable") from None
+    except (BitrixError, httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError):
+        raise HTTPException(status_code=502, detail="Bitrix lookup unavailable") from None
+
+
 @router.get(
     "/internal/deals/{deal_id}/contact-phone",
     dependencies=[Depends(require_internal_token)],
 )
 async def deal_contact_phone(deal_id: str) -> dict[str, str | None]:
     return {"phone": await BitrixGateway().get_deal_contact_phone(deal_id)}
+
+
+@router.get("/internal/deal-stage-labels", dependencies=[Depends(require_internal_token)])
+async def deal_stage_labels() -> dict[str, str]:
+    gateway = BitrixGateway()
+    names = {}
+    for category_id in sorted(get_settings().client_category_ids):
+        names.update(await deal_stage_names(gateway, category_id))
+    return names

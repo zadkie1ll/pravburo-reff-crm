@@ -19,6 +19,10 @@ class BitrixError(RuntimeError):
     pass
 
 
+class BitrixNotFound(BitrixError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class LeadData:
     application_id: int
@@ -37,16 +41,30 @@ class BitrixGateway:
         self.settings = get_settings()
 
     async def _call(self, method: str, payload: dict[str, Any]) -> Any:
+        return (await self._call_envelope(method, payload)).get("result")
+
+    async def _call_envelope(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.settings.bitrix_webhook_url:
             raise BitrixError("Bitrix API is not configured")
         url = f"{self.settings.bitrix_webhook_url.rstrip('/')}/{method}.json"
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(url, json=payload)
+        if response.status_code == 404:
+            raise BitrixNotFound("Bitrix entity not found")
+        try:
+            data = response.json()
+        except ValueError:
+            response.raise_for_status()
+            raise BitrixError("Invalid Bitrix response") from None
+        if not isinstance(data, dict):
+            response.raise_for_status()
+            raise BitrixError("Invalid Bitrix response")
+        if data.get("error") == "NOT_FOUND":
+            raise BitrixNotFound("Bitrix entity not found")
         response.raise_for_status()
-        data = response.json()
         if data.get("error"):
             raise BitrixError(data.get("error_description") or data["error"])
-        return data.get("result")
+        return data
 
     async def create_lead(self, lead: LeadData) -> str:
         marker = (
@@ -78,6 +96,16 @@ class BitrixGateway:
     async def get_deal(self, deal_id: str) -> dict[str, Any]:
         result = await self._call("crm.deal.get", {"id": deal_id})
         return result or {}
+
+    async def get_contact(self, contact_id: str) -> dict[str, Any]:
+        try:
+            return await self._call("crm.contact.get", {"id": contact_id}) or {}
+        except BitrixNotFound:
+            return {}
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return {}
+            raise
 
     async def get_deal_contact_phone(self, deal_id: str) -> str | None:
         deal = await self.get_deal(deal_id)
