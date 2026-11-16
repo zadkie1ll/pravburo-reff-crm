@@ -38,6 +38,8 @@ def test_preview_reads_only_deal_and_contact(monkeypatch, internal_headers):
 
     async def fake_call(self, method, payload):
         calls.append((method, payload))
+        if method == "crm.status.list":
+            return [{"STATUS_ID": MAIN_REWARD_STAGE, "NAME": "Депозит оплачен"}]
         if method == "crm.deal.get":
             return {
                 "CATEGORY_ID": "2",
@@ -64,18 +66,25 @@ def test_preview_reads_only_deal_and_contact(monkeypatch, internal_headers):
         "full_name": "Иванов Иван Иванович",
         "phone": "+79990000000",
         "stage_code": MAIN_REWARD_STAGE,
+        "stage_label": "Депозит оплачен",
         "category_id": 2,
         "first_payment": "189000.00",
         "paid_in_full": True,
         "attributed_agent_id": 12,
         "attributed_application_id": 34,
     }
-    assert calls == [("crm.deal.get", {"id": "555"}), ("crm.contact.get", {"id": "99"})]
+    assert calls == [
+        ("crm.deal.get", {"id": "555"}),
+        ("crm.contact.get", {"id": "99"}),
+        ("crm.status.list", {"filter": {"ENTITY_ID": "DEAL_STAGE_2"}}),
+    ]
 
 
 @pytest.mark.parametrize("contact_mode", ["no_id", "empty", "not_found", "http404"])
 def test_preview_allows_missing_contact(monkeypatch, internal_headers, contact_mode):
     async def fake_call(self, method, payload):
+        if method == "crm.status.list":
+            return []
         if method == "crm.deal.get":
             return {
                 "CATEGORY_ID": "0",
@@ -131,6 +140,8 @@ def test_preview_accepts_64_digit_positive_id(monkeypatch, internal_headers):
     deal_id = "9" * 64
 
     async def fake_call(self, method, payload):
+        if method == "crm.status.list":
+            return []
         assert method == "crm.deal.get"
         assert payload == {"id": deal_id}
         return {"CATEGORY_ID": "2"}

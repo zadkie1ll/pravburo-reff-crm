@@ -333,7 +333,7 @@ def test_dictionary_failures_preserve_candidates(provider, malformed):
     assert response.status_code == 200
     rows = response.json()["rows"]
     assert [r["category_label"] for r in rows] == ["Основная", "Сопровождение"]
-    assert [r["stage_label"] for r in rows] == ["NEW", "C2:NEW"]
+    assert [r["stage_label"] for r in rows] == ["Название этапа недоступно"] * 2
 
 
 def test_gateway_call_still_unwraps_result_and_envelope_keeps_next(provider):
